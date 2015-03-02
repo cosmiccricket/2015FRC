@@ -3,84 +3,129 @@ import java.lang.Math;
 import edu.wpi.first.wpilibj.AnalogInput;
 import edu.wpi.first.wpilibj.CANJaguar;
 import edu.wpi.first.wpilibj.Talon;
-import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 
-/* *
- * We want the swerve module class to
- * 1. Initialize 2 CANJaguars as parameters
- * 2. Directly receive direction and mag variables through a function and move the 
- * motorTurn jaguar until it has reached its goal
- * 3. Look nice and have comments
- * 
- * You will need to basically rip code from last year's math code and convert it to java
- * 
- * */
-
+/**
+ * The SwerveModule class is intended to hold all variables, objects, and calculations
+ * that are required for each module.
+ * @param mTalID
+ * 						ID for the location of the Talon PWM slot in the roboRIO.
+ * @param tJagID
+ * 						ID for the Jaguar's ID wired through CAN.
+ * @param eID
+ * 						ID for the absolute encoder slot in Analog Input.
+ * @param xCor
+ * 						X Value for center of rotation
+ * @param yCor
+ * 						Y Value for center of rotation
+ * @param off
+ * 						Offset of the position of the absolute encoder's zero and where you want your zero to be.
+ */
 public class SwerveModule {
 	private CANJaguar turnJag;
 	private Talon moveTal;
 	public AnalogInput encoder;
-	private static double minVoltage = 0.2;
-	public double x, y, corX, corY, mag, tarAngle;
-	public double diffAngle, curAngle, turnSpeed, distance, ratio, power;
-	public SwerveModule(int tJagID, int mTalID, int eID, double xCOR, double yCOR)
+	public double x, y, corX, corY, mag, tarTheta, diffTheta, curTheta, turnSpeed, rawDiffTheta;
+	private double offset;
+	public String status;
+	public SwerveModule(int mTalID, int tJagID, int eID, double xCOR, double yCOR, double off)
 	{
-		turnJag = new CANJaguar(tJagID);
+		status = "Clear";
+		try{
+			turnJag = new CANJaguar(tJagID);
+		} 
+		catch(edu.wpi.first.wpilibj.can.CANMessageNotFoundException e){
+			status = e.toString();
+		}
 		moveTal = new Talon(mTalID);
 		encoder = new AnalogInput(eID);
 		corX = xCOR;
 		corY = yCOR;
+		offset = off; // Pass this in later
 	}
+	
+	/**
+	 * Runs all calculations independant to the swerve module and updates motor controllers.
+	 */
 	public void update()
 	{
-//		moveTal.set(mag);
-		curAngle = (encoder.getVoltage() / 2.5 * Math.PI); //translates encoder voltage values to pi radians
-		if (tarAngle < 0){
-			tarAngle += 2 * Math.PI;
-			}  //Change range from (-pi,pi) to (0, 2pi).  Ease calculations.
-		diffAngle = Math.abs(tarAngle - curAngle);
-		if (Utils.deadband(diffAngle, Math.PI / 45) == 0){
-//			turnJag.set(0);
-		}  //applied deadband to test if target and current angle is close enough. Tolerance: 3 degrees (PI/60)
-
-		else if (diffAngle > Math.PI) {
-			if (tarAngle > curAngle){
-				distance = diffAngle - (2 * Math.PI); //getting distance to travel
-				ratio = distance / Math.PI; //ratio of distance to travel to half a circle
-				power = ratio / 1.25; //multiply by its amount of control over total power
-				turnSpeed = power - minVoltage; //add the minimum voltage
-//				turnJag.set(turnSpeed);
-			}
-			else {
-				distance = 2 * Math.PI - diffAngle;
-				ratio = distance / Math.PI;
-				power = ratio / 1.25;
-				turnSpeed = power + minVoltage;
-//				turnJag.set(turnSpeed);
-			}
+		
+		tarTheta = Math.atan2(y, x); // Calculate the angles we want to be at with the joystick inputs
+		
+		/**
+		 * Takes all of the variables modified and updates the motor controllers in the module
+		 */
+		curTheta = (encoder.getVoltage() - offset)/5*(2*Math.PI);
+		
+		rawDiffTheta = tarTheta - curTheta;
+		diffTheta = rawDiffTheta;
+		
+		// If our angle is over PI, then subtract PI*2 to bring the theta to be a smaller negative number
+		if (diffTheta > Math.PI) {
+			diffTheta -= 2 * Math.PI;
+		} // Converse for last statement for if the theta is less than PI
+		else if (diffTheta < - Math.PI) {
+			diffTheta += 2 * Math.PI;
 		}
-
-		else if (diffAngle < Math.PI){
-			if (tarAngle > curAngle){
-				distance = diffAngle;
-				ratio = distance / Math.PI;
-				power = ratio / 1.25;
-				turnSpeed = power + minVoltage;
-//				turnJag.set(turnSpeed);
-			}
-			else {
-				distance = -diffAngle;
-				ratio = distance / Math.PI;
-				power = ratio / 1.25;
-				turnSpeed = power - minVoltage;
-//				turnJag.set(turnSpeed);
-			}
+		
+		// If the diffTheta is greater than PI/2 (90 Degrees) we can make our movements more efficient
+		// by moving the module to have the wheel effectively be facing the same direction but have the wheel reversed.
+		if (diffTheta > Math.PI / 2) {
+			diffTheta -= Math.PI;
+			mag = mag * -1;
+		} 
+		else if (diffTheta < -Math.PI / 2){
+			diffTheta += Math.PI;
+			mag = mag * -1;
 		}
-		/*
-		 * Passing in voltage into motor control. Turn direction calculated based on the position and distance of 
-		 * target from current angle.  Turn voltage 0.2 minimum.  Other 0.8 voltage of power depends on distance of
-		 * target from current angle.  Calculation: absolute of the the difference divided by pi times 0.8 plus
-		 * 0.2.
-       	 */
+		
+		turnSpeed = diffTheta / (Math.PI / 2); // Our way of ramping down the turnSpeed based on the angle
+		
+		// Making sure turning motor never goes below 15% because friction in the motor will cause the swerve to have a hard time turning with any less
+		if (0 < turnSpeed && turnSpeed < 0.15){
+			turnSpeed = 0.15;
+		}
+		if (0 > turnSpeed && turnSpeed > -0.15){
+			turnSpeed = -0.15;
+		}
+		
+		// Our 'deadband' for the swerve module for an acceptable thereshold (4 degrees)
+		if (Math.abs(diffTheta) < Math.PI / 45){
+			turnSpeed = 0;
+		}
+		
+		// Hold Position if joystick is not being pressed to save power if we are continuing with a similar movement
+		if (Robot.stickX == 0 && Robot.stickY == 0 && Robot.stickPhi == 0){ 
+			turnJag.set(0);
+			moveTal.set(0);
+		}
+		else{ // Update motor controllers
+			turnJag.set(turnSpeed/3);
+			moveTal.set(mag/3);
+		}
+	}
+	/**
+	 * Set a raw speed input into the swerve module without applying any extra mathematics
+	 * @param turning
+	 *            The motor to turn during the function.
+	 *            If true, update the motor controller for turning the wheel.
+	 *            If false, update the turning of the wheel itself.
+	 * @param speed
+	 * 			  The speed to set the motor controller to.
+	 * 			  Accept a double in between -1 and 1
+	 */
+	public void rawUpdate(boolean turning, double speed){
+		if(turning){
+			turnJag.set(speed);
+		}
+		else{
+			moveTal.set(speed);
+		}
+	}
+	
+	/**
+	 * Takes the public x and y variables in the swerveModule and updates the magnitude alone.
+	 */
+	public void updateMag(){
+		mag = Math.sqrt(Math.pow(x,2) + Math.pow(y, 2));
 	}
 }
